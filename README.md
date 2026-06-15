@@ -1,7 +1,11 @@
 # TokenStorm
 
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/acodingmind/tokenstorm/blob/main/LICENSE)
+
 OpenCode TUI plugin that displays a full token usage breakdown (Input, Output,
-Reasoning, Cache R/W, Total) and estimated cost range in the sidebar.
+Reasoning, Cache R/W, Total) in the sidebar.
+
+Repo: <https://github.com/acodingmind/tokenstorm>
 
 ## Install
 
@@ -36,13 +40,8 @@ The plugin polls the active session every 10 seconds and displays:
 | Cache R     | `tokens.cache.read`                   |
 | Cache W     | `tokens.cache.write`                  |
 | Total       | input + output + reasoning            |
-| min cost    | cheapest Claude model × token counts  |
-| max cost    | most expensive Claude model × counts   |
 
-Costs are estimated using hardcoded Claude pricing (refreshed from
-[Anthropic's pricing page](https://docs.anthropic.com/en/docs/about-claude/pricing)
-on plugin load). Click **↺ Reset** (or run the `TokenStorm: Reset` command) to
-zero all counters.
+Click **↺ Reset** (or run the `TokenStorm: Reset` command) to zero all counters.
 
 Reactively updates on `session.created`, `session.updated`, and
 `tui.session.select` events.

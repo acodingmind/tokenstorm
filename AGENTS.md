@@ -37,29 +37,11 @@ sidebar. No build step — `.tsx` consumed directly at runtime.
 | Cache R       | `tokens.cache.read`                 |
 | Cache W       | `tokens.cache.write`                |
 | Total         | input + output + reasoning          |
-| min cost      | cheapest model × counts (per-tok)   |
-| max cost      | most expensive model × counts       |
 
 Interactive controls in the sidebar:
 - **↺ Reset** — clickable label (or `TokenStorm: Reset` command)
 - **API: On / ↗ API: On** — toggle API sending (or `TokenStorm: Toggle API` command)
 - **Labels** — shown when set via `TokenStorm: Labels` command (opens a dialog prompt to add comma-separated labels)
-
-### Pricing system
-
-- **Static fallback**: `MODEL_PRICING` map (~15 Claude models) keyed by model
-  ID with input/output per-million-token prices.
-- **Web refresh**: On plugin load, fetches
-  `https://docs.anthropic.com/en/docs/about-claude/pricing`, parses the pricing
-  table, and updates matching model entries. Silently fails back to the
-  hardcoded map on network/parse errors.
-- **Lookup**: Exact match first, then longest-prefix match against sorted keys
-  (e.g. `claude-sonnet-4-20250514` matches `claude-sonnet-4`).
-- **Cost calculation**:
-  `(input / 1_000_000) * pricing.input + (output + reasoning) / 1_000_000 * pricing.output`
-- **Cheapest / most expensive**: Computed once from the hardcoded map
-  (before refresh) as `CHEAPEST` and `EXPENSIVE` tuples. Used as a range
-  indicator, not per-model actual cost.
 
 ### Lifecycle
 

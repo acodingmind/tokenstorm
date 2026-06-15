@@ -1,8 +1,8 @@
 ---
 token storm keeps track of token usage
 ---
-Show token usage breakdown (Input, Output, Reasoning, Cache R/W, Total) and
-estimated cost range (min/max Claude models) in the OpenCode sidebar.
+Show token usage breakdown (Input, Output, Reasoning, Cache R/W, Total) in the
+OpenCode sidebar.
 
 Send the tokenusage to an api. The endpoint should be configurable, off by default, could be set to on by clicking an element on the ui.
 
@@ -25,21 +25,6 @@ usage and estimated cost in the sidebar. It polls the active session every
 | Cache R       | `tokens.cache.read`                 |
 | Cache W       | `tokens.cache.write`                |
 | Total         | input + output + reasoning          |
-| min cost      | cheapest Claude model × counts      |
-| max cost      | most expensive Claude model × counts|
-
-## Cost Estimation
-
-Costs are estimated using Claude model pricing:
-
-- **Static fallback**: Hardcoded `MODEL_PRICING` map (~15 Claude models).
-- **Web refresh**: On plugin load, fetches Anthropic's pricing page and updates
-  matching entries. Silently fails back to the hardcoded map on errors.
-- **Lookup**: Exact match first, then longest-prefix match (e.g.
-  `claude-sonnet-4-20250514` matches `claude-sonnet-4`).
-- **Formula**: `(input / 1_000_000) * pricing.input + (output + reasoning) / 1_000_000 * pricing.output`
-- **Range**: Cheapest and most expensive models are computed once from the
-  hardcoded map as a cost range indicator.
 
 ## Interactive Controls
 

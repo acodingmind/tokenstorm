@@ -27,6 +27,11 @@
   ],
   "license": "MIT",
   "author": "codingminds.io",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acodingmind/tokenstorm.git"
+  },
+  "homepage": "https://github.com/acodingmind/tokenstorm",
   "dependencies": {
     "@opencode-ai/plugin": "^1.4.3"
   },

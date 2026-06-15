@@ -9,110 +9,6 @@ const REFRESH_MS = 10_000
 const MAX_RETRIES = 3
 const RETRY_DELAY_MS = 1_000
 
-interface ModelPricing {
-  input: number
-  output: number
-}
-
-const MODEL_PRICING: Record<string, ModelPricing> = {
-  "claude-fable-5": { input: 10, output: 50 },
-  "claude-mythos-5": { input: 10, output: 50 },
-  "claude-opus-4-8": { input: 5, output: 25 },
-  "claude-opus-4-7": { input: 5, output: 25 },
-  "claude-opus-4-6": { input: 5, output: 25 },
-  "claude-opus-4-5": { input: 5, output: 25 },
-  "claude-sonnet-4-6": { input: 3, output: 15 },
-  "claude-sonnet-4-5": { input: 3, output: 15 },
-  "claude-sonnet-4": { input: 3, output: 15 },
-  "claude-haiku-4-5": { input: 1, output: 5 },
-  "claude-3-5-haiku": { input: 0.8, output: 4 },
-  "claude-opus-4-1": { input: 15, output: 75 },
-  "claude-opus-4": { input: 15, output: 75 },
-}
-
-const PRICING_ENTRIES = Object.entries(MODEL_PRICING)
-const CHEAPEST = PRICING_ENTRIES.reduce((a, b) =>
-  a[1].input + a[1].output < b[1].input + b[1].output ? a : b,
-)
-const EXPENSIVE = PRICING_ENTRIES.reduce((a, b) =>
-  a[1].input + a[1].output > b[1].input + b[1].output ? a : b,
-)
-
-const PRICING_URL = "https://docs.anthropic.com/en/docs/about-claude/pricing"
-
-const DISPLAY_NAME_TO_ID: Record<string, string> = {
-  "Claude Fable 5": "claude-fable-5",
-  "Claude Mythos 5": "claude-mythos-5",
-  "Claude Opus 4.8": "claude-opus-4-8",
-  "Claude Opus 4.7": "claude-opus-4-7",
-  "Claude Opus 4.6": "claude-opus-4-6",
-  "Claude Opus 4.5": "claude-opus-4-5",
-  "Claude Opus 4.1": "claude-opus-4-1",
-  "Claude Opus 4": "claude-opus-4",
-  "Claude Sonnet 4.6": "claude-sonnet-4-6",
-  "Claude Sonnet 4.5": "claude-sonnet-4-5",
-  "Claude Sonnet 4": "claude-sonnet-4",
-  "Claude Haiku 4.5": "claude-haiku-4-5",
-  "Claude Haiku 3.5": "claude-3-5-haiku",
-}
-
-function parsePriceValue(s: string): number | null {
-  const m = s.match(/\$(\d+(?:\.\d+)?)/)
-  return m ? parseFloat(m[1]) : null
-}
-
-async function refreshPricingFromWeb(): Promise<void> {
-  try {
-    const res = await fetch(PRICING_URL)
-    if (!res.ok) return
-    const text = await res.text()
-
-    const lines = text.split("\n")
-    let inPricingTable = false
-
-    for (const rawLine of lines) {
-      const line = rawLine.trim()
-
-      if (!inPricingTable && /^\|.*Model.*Base Input.*Output.*\|/.test(line)) {
-        inPricingTable = true
-        continue
-      }
-      if (!inPricingTable) continue
-      if (!line.startsWith("|")) break
-      if (line.includes("---")) continue
-
-      const parts = line.split("|").map((s) => s.trim())
-      if (parts.length < 7) continue
-
-      let name = parts[1]
-      name = name.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      const parenIdx = name.indexOf("(")
-      if (parenIdx !== -1) name = name.substring(0, parenIdx)
-      name = name.trim()
-
-      if (!name.startsWith("Claude")) continue
-
-      const inputPrice = parsePriceValue(parts[2])
-      const outputPrice = parsePriceValue(parts[6])
-      if (inputPrice === null || outputPrice === null) continue
-
-      const modelId = DISPLAY_NAME_TO_ID[name]
-      if (!modelId) continue
-
-      MODEL_PRICING[modelId] = { input: inputPrice, output: outputPrice }
-    }
-  } catch {
-    // Hardcoded MODEL_PRICING is the fallback
-  }
-}
-
-function formatCost(usd: number): string {
-  if (usd === 0) return "$0.00"
-  if (usd < 0.0001) return "<$0.0001"
-  if (usd < 1) return "$" + usd.toFixed(4)
-  return "$" + usd.toFixed(2)
-}
-
 interface TokenState {
   status: "loading" | "ready" | "error"
   input: number
@@ -190,8 +86,6 @@ const tui: TuiPlugin = async (api, options) => {
   let disposed = false
   let loadId = 0
   let lastSessionId = ""
-
-  refreshPricingFromWeb()
 
   const [collapsed, setCollapsed] = createSignal(false)
   const [apiUrl, setApiUrl] = createSignal(finalApiUrl)
@@ -542,19 +436,6 @@ const tui: TuiPlugin = async (api, options) => {
                       ↺ Reset
                     </text>
                   </box>
-                  <text fg={api.theme.current.textMuted}>Cost Estimation</text>
-                  <text fg={api.theme.current.textMuted}>
-                    min ({CHEAPEST[0]}) {formatCost(
-                      (state().input / 1_000_000) * CHEAPEST[1].input +
-                      ((state().output + state().reasoning) / 1_000_000) * CHEAPEST[1].output,
-                    )}
-                  </text>
-                  <text fg={api.theme.current.textMuted}>
-                    max ({EXPENSIVE[0]}) {formatCost(
-                      (state().input / 1_000_000) * EXPENSIVE[1].input +
-                      ((state().output + state().reasoning) / 1_000_000) * EXPENSIVE[1].output,
-                    )}
-                  </text>
                   <box flexDirection="row">
                     <text
                       fg={api.theme.current.textMuted}

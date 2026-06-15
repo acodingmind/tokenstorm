@@ -8,7 +8,7 @@ Add the plugin to your `~/.config/opencode/opencode.json`:
 
 ```jsonc
 {
-  "plugin": ["git+https://github.com/<user>/tokenstorm.git"]
+  "plugin": ["git+https://github.com/acodingmind/tokenstorm.git"]
 }
 ```
 
