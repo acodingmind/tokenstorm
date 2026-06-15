@@ -1,0 +1,43 @@
+{
+  "name": "tokenstorm",
+  "version": "0.1.0",
+  "description": "Show token usage (read/write) in the OpenCode TUI sidebar",
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./tui.tsx"
+    },
+    "./tui": {
+      "default": "./tui.tsx"
+    }
+  },
+  "files": [
+    "tui.tsx",
+    "package.json",
+    "README.md"
+  ],
+  "oc-plugin": [
+    "tui"
+  ],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "tokens",
+    "tui"
+  ],
+  "license": "MIT",
+  "author": "codingminds.io",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.4.3"
+  },
+  "peerDependencies": {
+    "@opentui/solid": "^0.3.2",
+    "solid-js": "^1.9.12"
+  },
+  "devDependencies": {
+    "@opentui/solid": "^0.4.1",
+    "@types/node": "^25.9.3",
+    "solid-js": "^1.9.12",
+    "typescript": "^5.9.3"
+  }
+}
