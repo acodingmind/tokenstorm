@@ -1,6 +1,6 @@
 {
   "name": "tokenstorm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Show token usage (read/write) in the OpenCode TUI sidebar",
   "type": "module",
   "exports": {
