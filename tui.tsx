@@ -2,27 +2,14 @@
 
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
 import { Show, createEffect, createSignal, onCleanup } from "solid-js"
+import type { TokenState } from "./token-utils"
+import { computeTotal, computeTokPerSec, zeroTokenState, applyBaseline, toSnapshot } from "./token-utils"
 
 const id = "tokenstorm"
 const SIDEBAR_ORDER = 130
 const REFRESH_MS = 10_000
 const MAX_RETRIES = 3
 const RETRY_DELAY_MS = 1_000
-
-interface TokenState {
-  status: "loading" | "ready" | "error"
-  input: number
-  output: number
-  reasoning: number
-  cacheRead: number
-  cacheWrite: number
-  total: number
-  duration: number
-  tokPerSec: number
-  error?: string
-  modelId?: string
-  providerId?: string
-}
 
 function formatCount(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M"
@@ -146,42 +133,25 @@ const tui: TuiPlugin = async (api, options) => {
   }
   let resetBaseline: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; total: number } | null = null
 
-  const [state, setState] = createSignal<TokenState>({
-    status: "loading",
-    input: 0,
-    output: 0,
-    reasoning: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    total: 0,
-    duration: 0,
-    tokPerSec: 0,
-    modelId: undefined,
-    providerId: undefined,
-  })
+  const [state, setState] = createSignal<TokenState>({ ...zeroTokenState(), status: "loading" })
 
   function reset() {
     prevTokens = null
     resetBaseline = null
     lastSentTotal = -1
     setLabels([])
-    load(lastSessionId).then(() => {
-      const s = state()
-      resetBaseline = { input: s.input, output: s.output, reasoning: s.reasoning, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, total: s.total }
-      setState({
-        status: "ready",
-        input: 0,
-        output: 0,
-        reasoning: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        total: 0,
-        duration: 0,
-        tokPerSec: 0,
-        modelId: undefined,
-        providerId: undefined,
-      })
-    })
+
+    const session = lastSessionId ? api.state.session.get(lastSessionId) : null
+    const tokens = session?.tokens
+
+    if (tokens) {
+      resetBaseline = toSnapshot(tokens)
+    }
+
+    setState(zeroTokenState())
+
+    prevTokens = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+    lastSentTotal = 0
   }
 
 
@@ -253,48 +223,37 @@ const tui: TuiPlugin = async (api, options) => {
         }
 
         if (tokens) {
-          let input = tokens.input ?? 0
-          let output = tokens.output ?? 0
-          let reasoning = tokens.reasoning ?? 0
-          let cacheRead = tokens.cache?.read ?? 0
-          let cacheWrite = tokens.cache?.write ?? 0
-          if (resetBaseline) {
-            input = Math.max(0, input - resetBaseline.input)
-            output = Math.max(0, output - resetBaseline.output)
-            reasoning = Math.max(0, reasoning - resetBaseline.reasoning)
-            cacheRead = Math.max(0, cacheRead - resetBaseline.cacheRead)
-            cacheWrite = Math.max(0, cacheWrite - resetBaseline.cacheWrite)
+          const raw = {
+            input: tokens.input ?? 0,
+            output: tokens.output ?? 0,
+            reasoning: tokens.reasoning ?? 0,
+            cacheRead: tokens.cache?.read ?? 0,
+            cacheWrite: tokens.cache?.write ?? 0,
           }
-          const total = input + output + reasoning
+          const adjusted = resetBaseline ? applyBaseline(raw, resetBaseline) : raw
+          const total = computeTotal(adjusted.input, adjusted.output, adjusted.reasoning)
           const s = {
-            status: "ready",
-            input,
-            output,
-            reasoning,
-            cacheRead,
-            cacheWrite,
+            status: "ready" as const,
+            input: adjusted.input,
+            output: adjusted.output,
+            reasoning: adjusted.reasoning,
+            cacheRead: adjusted.cacheRead,
+            cacheWrite: adjusted.cacheWrite,
             total,
             duration,
-            tokPerSec: duration > 0 ? total / (duration / 1000) : 0,
+            tokPerSec: computeTokPerSec(total, duration),
             modelId: model?.id,
             providerId: model?.providerID,
-          } as const
+          }
           setState(s)
           sendToApi(s)
         } else {
           const s = {
-            status: "ready",
-            input: 0,
-            output: 0,
-            reasoning: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            total: 0,
+            ...zeroTokenState(),
             duration,
-            tokPerSec: 0,
             modelId: model?.id,
             providerId: model?.providerID,
-          } as const
+          }
           setState(s)
           sendToApi(s)
         }
@@ -306,20 +265,7 @@ const tui: TuiPlugin = async (api, options) => {
           )
           if (disposed || myLoadId !== loadId) return
         } else {
-          setState({
-            status: "error",
-            input: 0,
-            output: 0,
-            reasoning: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            total: 0,
-            duration: 0,
-            tokPerSec: 0,
-            modelId: undefined,
-            providerId: undefined,
-            error: e instanceof Error ? e.message : "Failed to load",
-          })
+          setState({ ...zeroTokenState(), status: "error", error: e instanceof Error ? e.message : "Failed to load" })
         }
       }
     }
@@ -332,13 +278,13 @@ const tui: TuiPlugin = async (api, options) => {
     load(lastSessionId)
   } else if (api.state.ready) {
     // No active session and state is ready — show zeros instead of Loading
-    setState({ status: "ready", input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, duration: 0, tokPerSec: 0, modelId: undefined, providerId: undefined })
+    setState(zeroTokenState())
   } else {
     // No active session and state not ready yet — poll until ready
     const checkReady = setInterval(() => {
       if (api.state.ready) {
         clearInterval(checkReady)
-        setState({ status: "ready", input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, duration: 0, tokPerSec: 0, modelId: undefined, providerId: undefined })
+        setState(zeroTokenState())
       }
     }, 500)
     onCleanup(() => clearInterval(checkReady))

@@ -8,7 +8,8 @@ sidebar. No build step — `.tsx` consumed directly at runtime.
 | Command                | Purpose                                   |
 |------------------------|-------------------------------------------|
 | `bun --watch tui.tsx`  | dev with hot-reload                       |
-| `npx tsc --noEmit`     | typecheck (no linter, no test runner)     |
+| `npm test`             | run unit tests (vitest)                   |
+| `npm run typecheck`    | typecheck with `tsc --noEmit`             |
 
 ## Architecture
 
