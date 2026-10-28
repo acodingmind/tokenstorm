@@ -1,7 +1,8 @@
 # tokenstorm — OpenCode TUI plugin
 
-Single-file (`tui.tsx`) SolidJS plugin showing token usage in the OpenCode
-sidebar. No build step — `.tsx` consumed directly at runtime.
+SolidJS plugin (TUI in `tui.tsx`) showing token usage + cost estimation in the
+OpenCode sidebar. No build step — `.tsx` consumed directly at runtime. Pure
+helpers live in `token-utils.ts` (unit-tested with vitest).
 
 ## Commands
 
@@ -13,20 +14,24 @@ sidebar. No build step — `.tsx` consumed directly at runtime.
 
 ## Architecture
 
-- **Entrypoint**: default export `{ id: "tokenstorm", tui }` as
-  `TuiPluginModule`.
+- **Entrypoints**: `tui.tsx` default-exports `Plugin.define({ id, setup })`
+  (from `@opencode/plugin/tui`); `index.ts` is a minimal server-side plugin
+  stub (`@opencode/plugin`) — the TUI part is loaded via the `./tui` export.
 - **Discovery**: `"oc-plugin": ["tui"]` in `package.json` — host uses this to
   find the plugin.
-- **Exports**: both `"."` and `"./tui"` map to `./tui.tsx`.
+- **Exports**: `"."` → `./index.ts` (server), `"./tui"` → `./tui.tsx` (TUI).
 - **Module**: ESM (`"type": "module"`).
-- **Plugin import**: `@opencode-ai/plugin/tui` (subpath, not top-level).
+- **Plugin import**: `@opencode/plugin` / `@opencode/plugin/tui` (OpenCode 2.*
+  package; subpath for the TUI API).
 - **JSX**: `@opentui/solid` import source (NOT `solid-js`). Enforced by both
   `tsconfig.json` `jsxImportSource` and the
   `/** @jsxImportSource @opentui/solid */` pragma in `tui.tsx`.
-- **Slot**: `sidebar_content` at order `130`.
-- **Scope**: `.opencode/opencode.json` references the plugin via top-level
-  `"plugin"` array pointing at a local path.
-- **Published files**: `"files": ["tui.tsx", "package.json", "README.md"]`.
+- **Slot**: `context.ui.slot({ append: "sidebar.content" })` — the slot's
+  reactive `sessionID` prop drives which session is displayed.
+- **Scope**: root `opencode.jsonc` references the plugin via the v2 `plugins`
+  array (`"package": "./"` with an `options` object).
+- **Published files**: `"files": ["tui.tsx", "index.ts", "token-utils.ts",
+  "package.json", "README.md"]`.
 
 ### Displayed fields
 
@@ -38,27 +43,37 @@ sidebar. No build step — `.tsx` consumed directly at runtime.
 | Cache R       | `tokens.cache.read`                 |
 | Cache W       | `tokens.cache.write`                |
 | Total         | input + output + reasoning          |
+| Cost min/max  | cheapest/most expensive entry of `MODEL_PRICING` applied to tokens (see Cost Estimation) |
 
 Interactive controls in the sidebar:
+- **▶ / ▼ TokenStorm** — click the header to collapse/expand the panel
 - **↺ Reset** — clickable label (or `TokenStorm: Reset` command)
-- **API: On / ↗ API: On** — toggle API sending (or `TokenStorm: Toggle API` command)
+- **API: On / ↗ API: On** — toggle API sending (or `TokenStorm: Toggle API` command); shows `API: On (no URL)` when no endpoint is configured, and `·insecure-tls` when TLS verification is disabled
 - **Labels** — shown when set via `TokenStorm: Labels` command (opens a dialog prompt to add comma-separated labels)
 
 ### Lifecycle
 
-- **Refresh**: polls every 10s + reacts to `session.created`,
-  `session.updated`, `tui.session.select`.
-- **Initialisation**: On mount, reads `api.route.current` — if on a session
-  route, loads that session immediately; otherwise shows zeros.
+- **Refresh**: polls every 10s + reacts (500ms debounce) to
+  `session.usage.updated` and `session.execution.*` events. There is no
+  `session.updated` event in the 2.* event stream.
+- **Initialisation**: the session is taken from the reactive `sessionID`
+  input of the `sidebar.content` slot — the session the sidebar is showing.
+  Do not use `session.list()` at setup: the local store may be empty then.
+- **Store reads**: `data.session.get()` is a cache lookup and can return
+  `undefined` or stale values; always `await data.session.sync(id)` first.
 - **Retry**: up to 3 attempts, exponential backoff (1s, 2s, 4s).
 - **Race safety**: `loadId` counter + `disposed` flag discards stale
   responses.
-- **Commands**: `TokenStorm: Reset` zeroes counters, `TokenStorm: Toggle API`
-  enables/disables API posting, `TokenStorm: Labels` opens a `DialogPrompt` to
-  add comma-separated labels attached to API payloads.
-- **Reset**: `TokenStorm: Reset` command (via `api.command.register`) zeroes
-  all counters and sets status to `"ready"`. Also exposed as a clickable
-  `↺ Reset` label in the sidebar.
+- **Commands**: registered via `context.keymap.layer` (global mode).
+  `TokenStorm: Reset` re-bases counters, `TokenStorm: Toggle API`
+  enables/disables API posting, `TokenStorm: Toggle Insecure TLS` toggles
+  certificate verification for the POST, `TokenStorm: Labels` opens
+  `context.ui.dialog.prompt` to set comma-separated labels attached to API
+  payloads.
+- **Reset**: `TokenStorm: Reset` (also a clickable `↺ Reset` label) captures
+  the session's current totals as a `resetBaseline` (later reads subtract it,
+  floored at 0) and clears labels, so counters show usage *since reset*. The
+  baseline is cleared when the tracked session changes.
 
 ### Internal state (`TokenState`)
 
@@ -79,30 +94,48 @@ interface TokenState {
 }
 ```
 
-`duration` and `tokPerSec` are computed but not currently rendered in the UI.
+`duration` and `tokPerSec` are computed (and included in API payloads) but not
+currently rendered in the UI.
 
-### `.opencode/` subtree
+### Cost Estimation
 
-Used by the OpenCode host for its own plugin resolution:
-
-```
-.opencode/
-  .gitignore         — ignores node_modules, package files, bun.lock
-  opencode.json      — plugin list (just ["list"])
-  package.json       — pins @opencode-ai/plugin (dev dependency for the host)
-```
+- `MODEL_PRICING` maps Claude model ids to USD-per-million input/output
+  prices; `refreshPricingFromWeb()` scrapes the Anthropic pricing page at
+  setup to refresh the table, with the hardcoded values as fallback.
+- The sidebar renders a min/max range: the cheapest and most expensive table
+  entries applied as `input × inputPrice + (output + reasoning) ×
+  outputPrice` per million tokens. Cache tokens are not priced.
 
 ### API Sending
 
 Token usage can be sent to an external API endpoint via HTTP POST. Off by
 default; configure via `opencode.jsonc` or environment variables.
 
-**opencode.jsonc** (highest priority):
+Resolution order: `context.options` → `TOKENSTORM_API_URL` /
+`TOKENSTORM_API_ON` / `TOKENSTORM_API_INSECURE_TLS` env vars → async fallback
+that reads the merged config documents via `client.config.get()` and looks for
+this plugin's own `plugins` entry (fills in whatever the first two sources
+left unset).
+
+`apiInsecureTls` (also `TokenStorm: Toggle Insecure TLS`) adds Bun's
+`fetch(url, { tls: { rejectUnauthorized: false } })` so posts still go out to
+endpoints with expired or self-signed certificates. `sendToApi` swallows every
+error, so a broken TLS chain looks identical to "sending works" in the UI —
+check the certificate with `openssl s_client … | openssl x509 -noout -enddate`
+before debugging anything else.
+
+**opencode.jsonc** — v2 `plugins` key; the v1 `plugin` tuple form is
+deprecated and its options are **not** delivered to `context.options`. A
+copy auto-discovered from `~/.config/opencode/plugins/` also receives no
+options; it must be a configured `plugins` entry.
 
 ```jsonc
 {
-  "plugin": [
-    ["tokenstorm", { "apiUrl": "https://example.com/webhook", "apiOn": true, "labels": ["experiment-42", "prod-test"] }]
+  "plugins": [
+    {
+      "package": "./",
+      "options": { "apiUrl": "https://example.com/webhook", "apiOn": true, "labels": ["experiment-42", "prod-test"] }
+    }
   ]
 }
 ```
@@ -131,7 +164,8 @@ Payload shape:
 
 ## Dependencies
 
-- `@opencode-ai/plugin` — runtime dep for TUI plugin API.
-- `@opentui/solid` + `solid-js` — peer deps (provided by host, in devDeps for
-  typechecking). Note: `@opentui/solid` peer constraint is `^0.3.2`, devDep is
-  `^0.4.1`.
+- `@opencode/plugin` — runtime dep for the server + TUI plugin API (OpenCode
+  2.*).
+- `@opentui/core` + `@opentui/solid` + `solid-js` — peer deps (provided by
+  host; `@opentui/*` `>=0.6.6`, `solid-js` `>=1.9.0`; `@opentui/solid` and
+  `solid-js` also in devDeps for typechecking).

@@ -1,56 +1,72 @@
 # Installation
 
+OpenCode v2 only. The v1 `"plugin": [...]` config key is deprecated and its
+options objects are ignored — use the v2 `"plugins"` key below so the plugin
+receives its options.
+
 ## From GitHub
 
-Add the plugin to your `~/.config/opencode/opencode.json`:
-
-### Direct git URL
-
-```jsonc
-{
-  "plugin": ["git+https://github.com/acodingmind/tokenstorm.git"]
-}
-```
-
-### npm install from GitHub
-
 ```sh
-npm install tokenstorm
+opencode plugin add github:acodingmind/tokenstorm
 ```
 
-Then in `opencode.json`:
+To pass options, add an entry to `plugins` in `~/.config/opencode/opencode.jsonc`
+(or the project's `opencode.jsonc`):
 
 ```jsonc
 {
-  "plugin": ["tokenstorm"]
+  "plugins": [
+    {
+      "package": "tokenstorm",
+      "options": {
+        "apiUrl": "https://example.com/webhook",
+        "apiOn": true,
+        "labels": ["my-label"]
+      }
+    }
+  ]
 }
 ```
 
-### Bun install from GitHub
+## From a local checkout
 
-```sh
-bun add tokenstorm
-```
-
-Then in `opencode.json`:
+Point `plugins` at the plugin directory (relative paths resolve from the config
+file):
 
 ```jsonc
 {
-  "plugin": ["tokenstorm"]
+  "plugins": [
+    {
+      "package": "./path/to/tokenstorm",
+      "options": { "apiUrl": "https://example.com/webhook", "apiOn": true }
+    }
+  ]
 }
 ```
+
+Note: simply placing the directory in `~/.config/opencode/plugins/` loads the
+plugin but passes **no options** — use a `plugins` entry for that.
 
 ## Configuration
 
-No additional configuration required. The plugin auto-discovers via the
-`"oc-plugin": ["tui"]` field in `package.json`.
+| Option   | Type       | Meaning                                        |
+|----------|------------|------------------------------------------------|
+| `apiUrl` | string     | POST endpoint for token usage payloads         |
+| `apiOn`  | boolean    | Start with API sending enabled (default false) |
+| `labels` | string[]   | Labels attached to API payloads                |
+| `apiInsecureTls` | boolean | Skip TLS certificate verification for the POST (stopgap for expired / self-signed certs) |
+
+Environment fallbacks: `TOKENSTORM_API_URL`, `TOKENSTORM_API_ON`,
+`TOKENSTORM_API_INSECURE_TLS`.
 
 ## Verification
 
-After installing, restart OpenCode. **TokenStorm** should appear in the right
-sidebar panel showing token usage breakdown.
+After installing, restart OpenCode (`opencode service restart` if running as a
+service). **TokenStorm** should appear in the right sidebar panel showing token
+usage breakdown. Run `opencode plugin list` to confirm the plugin resolves to
+the location you expect.
 
 ## Uninstall
 
-Remove `"tokenstorm"` (or the git URL) from the `"plugin"` array in
-`opencode.json` and restart OpenCode.
+Remove the `tokenstorm` entry from `plugins` (or `opencode plugin remove
+tokenstorm` for global installs) and restart OpenCode.

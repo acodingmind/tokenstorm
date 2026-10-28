@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "description": "Show token usage (read/write) in the OpenCode TUI sidebar",
   "type": "module",
+  "oc-plugin": ["tui"],
   "exports": {
     ".": {
       "default": "./index.ts"
