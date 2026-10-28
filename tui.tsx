@@ -1,10 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 
 import { Plugin } from "@opencode/plugin/tui"
-import { Show, createSignal, onCleanup } from "solid-js"
+import { Show, createEffect, createSignal, onCleanup } from "solid-js"
 
 const id = "tokenstorm"
-const SIDEBAR_ORDER = 130
 const REFRESH_MS = 10_000
 const MAX_RETRIES = 3
 const RETRY_DELAY_MS = 1_000
@@ -134,21 +133,22 @@ function formatCount(n: number): string {
   return n.toLocaleString()
 }
 
-function readPluginOptions(options: Record<string, unknown> | undefined): Record<string, unknown> {
-  if (options && typeof options === "object") {
-    return options
-  }
-  return {}
+function parseApiOn(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined
+  return value === true || String(value) === "true"
 }
 
 export default Plugin.define({
   id,
   setup(context) {
-    const configObj = readPluginOptions(context.options as Record<string, unknown> | undefined)
-    const configApiUrl: string | undefined = "apiUrl" in configObj && configObj.apiUrl != null && configObj.apiUrl !== "" ? String(configObj.apiUrl) : undefined
-    const configApiOn: boolean | undefined = "apiOn" in configObj ? String(configObj.apiOn ?? "") === "true" : undefined
-    const configLabels: string[] | undefined = "labels" in configObj && Array.isArray(configObj.labels)
-      ? configObj.labels.map(String)
+    const options = (context.options ?? {}) as Record<string, unknown>
+
+    const configApiUrl: string | undefined =
+      typeof options.apiUrl === "string" && options.apiUrl !== "" ? options.apiUrl : undefined
+    const configApiOn = parseApiOn(options.apiOn)
+    const configApiInsecure = parseApiOn(options.apiInsecureTls)
+    const configLabels: string[] | undefined = Array.isArray(options.labels)
+      ? options.labels.map(String)
       : undefined
 
     const envApiUrl =
@@ -159,22 +159,81 @@ export default Plugin.define({
       typeof process !== "undefined" &&
       process.env?.TOKENSTORM_API_ON != null &&
       process.env.TOKENSTORM_API_ON !== ""
-        ? String(process.env.TOKENSTORM_API_ON) === "true"
+        ? parseApiOn(process.env.TOKENSTORM_API_ON)
         : undefined
-
-    const finalApiUrl = configApiUrl ?? envApiUrl
-    const finalApiOn = configApiOn ?? envApiOn
+    const envApiInsecure =
+      typeof process !== "undefined" &&
+      process.env?.TOKENSTORM_API_INSECURE_TLS != null &&
+      process.env.TOKENSTORM_API_INSECURE_TLS !== ""
+        ? parseApiOn(process.env.TOKENSTORM_API_INSECURE_TLS)
+        : undefined
 
     let disposed = false
     let loadId = 0
     let lastSessionId = ""
+    let refreshScheduled = false
 
     refreshPricingFromWeb()
 
     const [collapsed, setCollapsed] = createSignal(false)
-    const [apiUrl, setApiUrl] = createSignal(finalApiUrl)
-    const [apiEnabled, setApiEnabled] = createSignal(finalApiOn !== undefined ? finalApiOn : false)
+    const [apiUrl, setApiUrl] = createSignal(configApiUrl ?? envApiUrl)
+    const [apiEnabled, setApiEnabled] = createSignal((configApiOn ?? envApiOn) === true)
+    const [apiInsecureTls, setApiInsecureTls] = createSignal(
+      (configApiInsecure ?? envApiInsecure) === true,
+    )
     const [labels, setLabels] = createSignal<string[]>(configLabels ?? [])
+
+    // Fallback for when options do not arrive through context.options: read
+    // the merged config documents from the server and find this plugin's own
+    // `plugins` entry there. Later documents (project scope) win.
+    async function fallbackOptionsFromConfig() {
+      try {
+        const response = await context.client.config.get({
+          location: context.location ?? context.data.location.default(),
+        } as any)
+        const documents: any[] = Array.isArray(response)
+          ? (response as any[])
+          : ((response as any)?.data ?? [])
+        let match: Record<string, unknown> | undefined
+        for (const document of documents) {
+          const plugins: Array<string | { package?: string; options?: Record<string, unknown> }> =
+            document?.info?.plugins ?? []
+          for (const plugin of plugins) {
+            if (typeof plugin === "string" || typeof plugin?.package !== "string") continue
+            const pkg = plugin.package
+            const isMine =
+              pkg === id ||
+              pkg.endsWith("/" + id) ||
+              pkg === "./" ||
+              pkg === "." ||
+              pkg.startsWith("./")
+            if (isMine && plugin.options) match = plugin.options
+          }
+        }
+        if (!match) return
+        if (typeof match.apiUrl === "string" && match.apiUrl !== "") {
+          setApiUrl((current) => current ?? match!.apiUrl as string)
+        }
+        const on = parseApiOn(match.apiOn)
+        if (on !== undefined && configApiOn === undefined && envApiOn === undefined) {
+          setApiEnabled(on)
+        }
+        const insecure = parseApiOn(match.apiInsecureTls)
+        if (
+          insecure !== undefined &&
+          configApiInsecure === undefined &&
+          envApiInsecure === undefined
+        ) {
+          setApiInsecureTls(insecure)
+        }
+        if (labels().length === 0 && Array.isArray(match.labels)) {
+          setLabels(match.labels.map(String))
+        }
+      } catch {
+        // Best-effort fallback; context.options and env vars still apply.
+      }
+    }
+    fallbackOptionsFromConfig()
 
     let prevTokens: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number; total: number } | null = null
     let lastSentTotal = -1
@@ -207,7 +266,7 @@ export default Plugin.define({
           total: tokenState.total - prevTokens.total,
         } : null
 
-        await fetch(apiUrl()!, {
+        const requestInit: RequestInit = {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -228,7 +287,13 @@ export default Plugin.define({
             model: tokenState.modelId || undefined,
             provider: tokenState.providerId || undefined,
           }),
-        })
+        }
+        if (apiInsecureTls()) {
+          // Bun-specific fetch option: accept expired/self-signed certs.
+          Object.assign(requestInit, { tls: { rejectUnauthorized: false } })
+        }
+
+        await fetch(apiUrl()!, requestInit)
 
         prevTokens = {
           input: tokenState.input,
@@ -276,63 +341,50 @@ export default Plugin.define({
 
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const session = context.data.session.get(sessionId)
+          // The local store is only a cache: refresh it from the server
+          // first, or session.get() can return undefined or stale tokens.
+          await context.data.session.sync(sessionId)
           if (disposed || myLoadId !== loadId) return
 
-          const tokens = (session as any)?.tokens
-          const time = (session as any)?.time
-          const model = (session as any)?.model
+          const session = context.data.session.get(sessionId)
+          if (!session) throw new Error(`Session ${sessionId} not found`)
+
+          const tokens = session.tokens
+          const time = session.time
+          const model = session.model
           let duration = 0
           if (time?.created && time?.updated && time.updated > time.created) {
             duration = time.updated - time.created
           }
 
-          if (tokens) {
-            let input = tokens.input ?? 0
-            let output = tokens.output ?? 0
-            let reasoning = tokens.reasoning ?? 0
-            let cacheRead = tokens.cache?.read ?? 0
-            let cacheWrite = tokens.cache?.write ?? 0
-            if (resetBaseline) {
-              input = Math.max(0, input - resetBaseline.input)
-              output = Math.max(0, output - resetBaseline.output)
-              reasoning = Math.max(0, reasoning - resetBaseline.reasoning)
-              cacheRead = Math.max(0, cacheRead - resetBaseline.cacheRead)
-              cacheWrite = Math.max(0, cacheWrite - resetBaseline.cacheWrite)
-            }
-            const total = input + output + reasoning
-            const s = {
-              status: "ready" as const,
-              input,
-              output,
-              reasoning,
-              cacheRead,
-              cacheWrite,
-              total,
-              duration,
-              tokPerSec: duration > 0 ? total / (duration / 1000) : 0,
-              modelId: model?.id,
-              providerId: model?.providerID || model?.providerId,
-            }
-            setState(s)
-            sendToApi(s)
-          } else {
-            const s = {
-              status: "ready" as const,
-              input: 0,
-              output: 0,
-              reasoning: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              total: 0,
-              duration,
-              tokPerSec: 0,
-              modelId: model?.id,
-              providerId: model?.providerID || model?.providerId,
-            }
-            setState(s)
-            sendToApi(s)
+          let input = tokens?.input ?? 0
+          let output = tokens?.output ?? 0
+          let reasoning = tokens?.reasoning ?? 0
+          let cacheRead = tokens?.cache?.read ?? 0
+          let cacheWrite = tokens?.cache?.write ?? 0
+          if (resetBaseline) {
+            input = Math.max(0, input - resetBaseline.input)
+            output = Math.max(0, output - resetBaseline.output)
+            reasoning = Math.max(0, reasoning - resetBaseline.reasoning)
+            cacheRead = Math.max(0, cacheRead - resetBaseline.cacheRead)
+            cacheWrite = Math.max(0, cacheWrite - resetBaseline.cacheWrite)
           }
+          const total = input + output + reasoning
+          const s: TokenState = {
+            status: "ready",
+            input,
+            output,
+            reasoning,
+            cacheRead,
+            cacheWrite,
+            total,
+            duration,
+            tokPerSec: duration > 0 ? total / (duration / 1000) : 0,
+            modelId: model?.id,
+            providerId: model?.providerID,
+          }
+          setState(s)
+          sendToApi(s)
           return
         } catch (e: unknown) {
           if (attempt < MAX_RETRIES) {
@@ -360,6 +412,16 @@ export default Plugin.define({
       }
     }
 
+    // Coalesce bursts of session events into a single reload.
+    function scheduleRefresh() {
+      if (disposed || refreshScheduled) return
+      refreshScheduled = true
+      setTimeout(() => {
+        refreshScheduled = false
+        if (!disposed && lastSessionId) load(lastSessionId)
+      }, 500)
+    }
+
     context.keymap.layer(() => ({
       mode: "global",
       priority: 10,
@@ -372,9 +434,15 @@ export default Plugin.define({
         },
         {
           id: "tokenstorm.toggleApi",
-          title: `TokenStorm: Toggle API (currently ${apiEnabled() ? "On" : "Off"})`,
+          title: "TokenStorm: Toggle API",
           group: "TokenStorm",
-          run: () => setApiEnabled(!apiEnabled()),
+          run: () => setApiEnabled((v) => !v),
+        },
+        {
+          id: "tokenstorm.toggleInsecureTls",
+          title: `TokenStorm: Toggle Insecure TLS${apiInsecureTls() ? " (on)" : ""}`,
+          group: "TokenStorm",
+          run: () => setApiInsecureTls((v) => !v),
         },
         {
           id: "tokenstorm.setLabels",
@@ -396,47 +464,70 @@ export default Plugin.define({
       ],
     }))
 
-    // Try to get current session
-    try {
-      const sessions = context.data.session.list()
-      if (sessions && sessions.length > 0) {
-        const latest = sessions[sessions.length - 1] as any
-        if (latest?.id) {
-          lastSessionId = latest.id
-          load(lastSessionId)
+    // Refresh on the events that carry token-usage changes in the 2.* event
+    // stream (`session.updated` no longer exists).
+    const unsubs = [
+      context.data.on("session.usage.updated", (e) => {
+        if (e.data?.sessionID === lastSessionId) scheduleRefresh()
+      }),
+      context.data.on("session.execution.succeeded", (e) => {
+        if (e.data?.sessionID === lastSessionId) scheduleRefresh()
+      }),
+      context.data.on("session.execution.failed", (e) => {
+        if (e.data?.sessionID === lastSessionId) scheduleRefresh()
+      }),
+      context.data.on("session.execution.interrupted", (e) => {
+        if (e.data?.sessionID === lastSessionId) scheduleRefresh()
+      }),
+      context.data.on("session.created", (e) => {
+        const sid = e.data?.sessionID
+        if (sid && !lastSessionId) {
+          lastSessionId = sid
+          load(sid)
         }
-      }
-    } catch {}
+      }),
+    ]
 
     const interval = setInterval(() => {
       if (lastSessionId) load(lastSessionId)
     }, REFRESH_MS)
 
-    const unsub1 = context.data.on("session.created" as any, (e: any) => {
-      const sid = e?.properties?.sessionID || e?.properties?.id || e?.id
-      if (sid) {
-        lastSessionId = sid
-        load(sid)
-      }
-    })
-    const unsub2 = context.data.on("session.updated" as any, (e: any) => {
-      const sid = e?.properties?.sessionID || e?.properties?.id || e?.id
-      if (sid) {
-        lastSessionId = sid
-        load(sid)
-      }
-    })
-
     onCleanup(() => {
       disposed = true
       clearInterval(interval)
-      unsub1()
-      unsub2()
+      for (const unsub of unsubs) unsub()
     })
 
     context.ui.slot({
       append: "sidebar.content",
-      render: () => {
+      render: (props) => {
+        // The slot input carries the session the sidebar is showing. It is
+        // reactive, so switching sessions re-targets the counters.
+        createEffect(() => {
+          const sid = props.sessionID
+          if (!sid) return
+          if (sid !== lastSessionId) {
+            lastSessionId = sid
+            resetBaseline = null
+            prevTokens = null
+            lastSentTotal = -1
+            setState({
+              status: "loading",
+              input: 0,
+              output: 0,
+              reasoning: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              total: 0,
+              duration: 0,
+              tokPerSec: 0,
+              modelId: undefined,
+              providerId: undefined,
+            })
+          }
+          load(sid)
+        })
+
         const c = collapsed
         return (
           <box gap={0}>
@@ -480,12 +571,11 @@ export default Plugin.define({
                       Total     {formatCount(state().total)} tok
                     </text>
                     <text fg={context.theme.text.muted}> · </text>
-                    <text
-                      fg={context.theme.text.muted}
-                      onMouseDown={() => reset()}
-                    >
-                      ↺ Reset
-                    </text>
+                    <box onMouseDown={() => reset()}>
+                      <text fg={context.theme.text.muted}>
+                        ↺ Reset
+                      </text>
+                    </box>
                   </box>
                   <text fg={context.theme.text.muted}>Cost Estimation</text>
                   <text fg={context.theme.text.muted}>
@@ -500,22 +590,24 @@ export default Plugin.define({
                       ((state().output + state().reasoning) / 1_000_000) * EXPENSIVE[1].output,
                     )}
                   </text>
-                  <box flexDirection="row">
-                    <text
-                      fg={context.theme.text.muted}
-                      onMouseDown={() => setApiEnabled(!apiEnabled())}
-                    >
-                      {apiEnabled() && apiUrl() ? "↗ API: On" : "API: Off"}
-                    </text>
-                  </box>
+                </box>
+              </Show>
 
-                  <Show when={labels().length > 0}>
-                    <box flexDirection="row">
-                      {labels().map((l) => (
-                        <text fg={context.theme.text.muted}> · {l}</text>
-                      ))}
-                    </box>
-                  </Show>
+              <box flexDirection="row" onMouseDown={(e: any) => { e?.stopPropagation?.(); setApiEnabled((v) => !v); }}>
+                <text fg={context.theme.text.muted}>
+                  {apiEnabled()
+                    ? `↗ API: On${apiUrl() ? "" : " (no URL)"}${
+                        apiInsecureTls() ? " ·insecure-tls" : ""
+                      }`
+                    : "API: Off"}
+                </text>
+              </box>
+
+              <Show when={labels().length > 0}>
+                <box flexDirection="row">
+                  {labels().map((l) => (
+                    <text fg={context.theme.text.muted}> · {l}</text>
+                  ))}
                 </box>
               </Show>
             </Show>
